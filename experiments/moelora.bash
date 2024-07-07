@@ -6,18 +6,18 @@ LR=2e-4
 MAX_STEPS=8000
 SAVE_STEPS=8000
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
-model_name_or_path="resources/chatglm-6b"   
-your_data_path="data"  
-your_checkpopint_path="saved/moelora"  
+model_name_or_path="google/flan-t5-base"
+your_data_path="data"
+your_checkpopint_path="saved/moelora"
 MAX_SOURCE_LENGTH=1024
 
-peft_path=""  
+peft_path=""
 
 # # Training Command
 deepspeed --num_gpus=4 --master_port $MASTER_PORT run_mlora.py \
     --deepspeed src/ds.config \
     --do_train \
-    --train_file $your_data_path/train.json \
+    --train_file $your_data_path/train_sft.jsonl \
     --cache_dir $your_data_path \
     --prompt_column input \
     --response_column target \
@@ -44,7 +44,7 @@ deepspeed --num_gpus=4 --master_port $MASTER_PORT run_mlora.py \
 
 deepspeed --num_gpus=4 --master_port $MASTER_PORT run_mlora.py \
     --do_predict \
-    --test_file $your_data_path/test.json \
+    --test_file $your_data_path/test_sft.jsonl \
     --cache_dir $your_data_path \
     --overwrite_cache \
     --prompt_column input \

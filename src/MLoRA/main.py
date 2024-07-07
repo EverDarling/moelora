@@ -35,6 +35,7 @@ from transformers import (
     AutoTokenizer,
     DataCollatorForSeq2Seq,
     set_seed,
+    DataCollatorForLanguageModeling
 )
 
 sys.path.append("./")
@@ -44,12 +45,13 @@ from src.MLoRA.peft import PeftModel, TaskType, get_peft_model
 from src.MLoRA.peft import LoraConfig, AdaLoraConfig
 from src.MLoRA.peft import MMOELoraConfigS
 from src.data_processor.chatglm import chatglm1_train, chatglm1_eval
+from src.data_processor.flan_t5 import FlanT5Train
 from src.data_processor.collator import LongestSequenceCollator
 
 logger = logging.getLogger(__name__)
 
-def main(parser):
 
+def main(parser):
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
@@ -57,7 +59,7 @@ def main(parser):
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    training_args.batched_training = data_args.batched_training # for batched training
+    training_args.batched_training = data_args.batched_training  # for batched training
     # if model_args.department:   # for the department
     #     model_args.task_num = model_args.depart_num
 
@@ -126,7 +128,7 @@ def main(parser):
     model = AutoModel.from_pretrained(
         model_args.model_name_or_path,
         trust_remote_code=True
-    ).half().cuda()    # .half() represents to use half of orginal accuracy
+    ).half().cuda()  # .half() represents to use half of orginal accuracy
 
     if model_args.peft_path is not None:
         logger.info("Peft from pre-trained model")
@@ -138,7 +140,7 @@ def main(parser):
     else:
         logger.info("Init new peft model")
         target_modules = model_args.trainable.split(',')
-        modules_to_save = model_args.modules_to_save.split(',') if model_args.modules_to_save!="null" else None
+        modules_to_save = model_args.modules_to_save.split(',') if model_args.modules_to_save != "null" else None
         lora_rank = model_args.lora_rank
         lora_dropout = model_args.lora_dropout
         lora_alpha = model_args.lora_alpha
@@ -151,15 +153,15 @@ def main(parser):
         elif model_args.lora_name == "moelora":
             TargetLoraConfig = MMOELoraConfigS
             kwargs = {
-                  "task_num": model_args.task_num,
-                  "task_embedding_dim": model_args.task_embedding_dim,
-                  "expert_num": model_args.expert_num,
-                  }
+                "task_num": model_args.task_num,
+                "task_embedding_dim": model_args.task_embedding_dim,
+                "expert_num": model_args.expert_num,
+            }
             task_type = TaskType.CAUSAL_LMS
         else:
             TargetLoraConfig = LoraConfig
             task_type = TaskType.CAUSAL_LM
-        
+
         peft_config = TargetLoraConfig(
             task_type=task_type,
             target_modules=target_modules,
@@ -170,15 +172,13 @@ def main(parser):
             **kwargs
         )
         model = get_peft_model(model, peft_config)
-    
 
     model.print_trainable_parameters()
 
-    task_flag = False   # flag whether generate task_id from dataset
+    task_flag = False  # flag whether generate task_id from dataset
     depart_flag = False  # flag whether use the department and entity
     if (model_args.lora_name == "moelora"):
         task_flag = True
-
 
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
@@ -198,16 +198,16 @@ def main(parser):
     prompt_column = data_args.prompt_column
     response_column = data_args.response_column
     history_column = data_args.history_column
-    
+
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
 
     def print_dataset_example(example):
-        print("input_ids: ",example["input_ids"])
+        print("input_ids: ", example["input_ids"])
         print("inputs: ", tokenizer.decode(example["input_ids"]))
         print("label_ids: ", example["labels"])
-        #print("labels: ", tokenizer.decode(example["labels"])) # For ChatGLMv2
-    
+        # print("labels: ", tokenizer.decode(example["labels"])) # For ChatGLMv2
+
     if model_args.model_name_or_path.split("/")[-1] == "chatglm-6b":
         preprocess_function_train = chatglm1_train(data_args, model_args, prompt_column,
                                                    response_column, history_column, prefix,
@@ -215,6 +215,10 @@ def main(parser):
         preprocess_function_eval = chatglm1_eval(data_args, model_args, prompt_column,
                                                  response_column, history_column, prefix,
                                                  tokenizer, task_flag, depart_flag)
+    elif model_args.model_name_or_path.split("/")[-1] == 'flan-t5':
+        # TODO: add the test preprocess function for flan-t5
+        # TODO: the name may be not accurate, use .contains maybe better
+        preprocess_function_train = FlanT5Train(raw_datasets, tokenizer)
     else:
         raise ValueError("No such Foundation Model")
 
@@ -280,8 +284,9 @@ def main(parser):
         predict_dataset.set_format("torch")
 
     # Data collator
+    # TODO: for flan-t5, use flan-t5-collator instead of the one moe-lora provides
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-    
+
     # if training_args.do_train:  # only conduct padding for do_train
     #     data_collator = DataCollatorForSeq2Seq(
     #         tokenizer,
@@ -292,7 +297,9 @@ def main(parser):
     #     )
     # else:
     if training_args.do_train:
-        data_collator = LongestSequenceCollator(tokenizer, task_flag, depart_flag)
+        # data_collator = LongestSequenceCollator(tokenizer, task_flag, depart_flag)
+        data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+        # data_collator = LongestSequenceCollator(tokenizer, task_flag, depart_flag)
     else:
         data_collator = DataCollatorForSeq2Seq(
             tokenizer,
@@ -365,7 +372,8 @@ def main(parser):
     results = {}
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate(metric_key_prefix="eval", do_sample=True, top_p=0.7, max_length=512, temperature=0.95)
+        metrics = trainer.evaluate(metric_key_prefix="eval", do_sample=True, top_p=0.7, max_length=512,
+                                   temperature=0.95)
         max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
         metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
 
@@ -399,8 +407,8 @@ def main(parser):
         )
         metrics["predict_samples"] = min(max_predict_samples, len(predict_dataset))
 
-        #trainer.log_metrics("predict", metrics)
-        #trainer.save_metrics("predict", metrics)
+        # trainer.log_metrics("predict", metrics)
+        # trainer.save_metrics("predict", metrics)
 
         if trainer.is_world_process_zero():
             if training_args.predict_with_generate:
@@ -424,7 +432,6 @@ def main(parser):
                         writer.write(f"{res}\n")
 
     return results
-
 
 
 if __name__ == "__main__":
